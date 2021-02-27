@@ -12,10 +12,11 @@ def get_data(lat, lon):
    url = "http://metwdb-openaccess.ichec.ie/metno-wdb2ts/locationforecast?lat={0};long={1}".format(str(lat), str(lon))
     
 
-   resp = requests.get(url)                                    #making the request
+   resp = requests.get(url)                                                #making the request
 
-   if resp.status_code != 200:                                 #if data not returned
+   if resp.status_code != 200:                                             #if data not returned
       return -1   
 
-   data_dict = xmltodict.parse(resp.text)
-   return json.dumps(data_dict)
+   data_dict = xmltodict.parse(resp.text)                                  #convert the data returned from the Met to a dict  
+   next48hrs = data_dict.get("weatherdata").get("product").get("time")     #strip out only the data we want - the weather predictions
+   return json.dumps(next48hrs[0:96])                                      #return the weather predictions as .json
