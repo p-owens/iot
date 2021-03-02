@@ -7,10 +7,16 @@ import xmltodict
 #returns a np array of weather data for the next 48 hours
 #in one hour intervals 
 
-def get_data(lat, lon):
+def get_data(json_in):
+      
+   #parse the input
+   ip = json.loads(json_in)
+   lat = ip["latitude"]
+   lon = ip["longitude"]
+   
    #url to make requests from MetEireann
    url = "http://metwdb-openaccess.ichec.ie/metno-wdb2ts/locationforecast?lat={0};long={1}".format(str(lat), str(lon))
-    
+
 
    resp = requests.get(url)                                                #making the request
 
