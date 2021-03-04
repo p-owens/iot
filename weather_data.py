@@ -1,28 +1,45 @@
+#  you need to pip install requests 
+#  and xmltodict packages
+
 import requests
-import numpy as np
 import json
 import xmltodict
 
-#function takes lattitude and longatiude as floats
-#returns a np array of weather data for the next 48 hours
-#in one hour intervals 
+#  the function takes a request in the form of a .json string
+#  eg:
+#  {
+#     "lat":"[lattitude]",
+#     "long":"[longitude]"
+#  }
+#
+#  returns a json string of weather data for the next 48 hrs
 
-def get_data(json_in):
-      
-   #parse the input
-   ip = json.loads(json_in)
-   lat = ip["latitude"]
-   lon = ip["longitude"]
+def get_met(request):
+
+   #parse the input   
+   request_json = request.get_json()
+   if request_json and 'lat' in request_json and 'long' in request_json:
+      lat = request_json['lat']
+      lon = request_json['long']
+   else:
+#  return an error if the input isn't specified correctly      
+      return f'Error'   
    
-   #url to make requests from MetEireann
+#  make a request from MetEireann   
    url = "http://metwdb-openaccess.ichec.ie/metno-wdb2ts/locationforecast?lat={0};long={1}".format(str(lat), str(lon))
+   resp = requests.get(url)                                               
 
+#  check to make sure the request was successful 
+   if resp.status_code != 200:                   
+      return f'Error'  
 
-   resp = requests.get(url)                                                #making the request
+#  turn the xml returned from the Met into a dict
+   data_dict = xmltodict.parse(resp.text)                 
 
-   if resp.status_code != 200:                                             #if data not returned
-      return -1   
+#  we only care about the weather predictions drop everything else   
+   next48hrs = data_dict.get("weatherdata").get("product").get("time")   
 
-   data_dict = xmltodict.parse(resp.text)                                  #convert the data returned from the Met to a dict  
-   next48hrs = data_dict.get("weatherdata").get("product").get("time")     #strip out only the data we want - the weather predictions
-   return json.dumps(next48hrs[0:96])                                      #return the weather predictions as .json
+#  convert the dict to .json and return it   
+   weather = json.dumps(next48hrs[0:96])                                 
+   return weather
+   
