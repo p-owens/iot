@@ -1,72 +1,114 @@
-// ROUGH PSEUDOCODE FOR IRRIGATION DECISION
-// NOTE THAT WE SHOULD INCLUDE A LOG FUNCTIONALITY
-// THIS LOG WILL RECORD THE SENSOR DATA WE GET AND THE DECISIONS WE MAKE WITH TIMESTAMPS
+const functions = require("firebase-functions");
 
-// ASSUME IRRIGATION DECISION IS CALLED EVERY MORNING
-function irrigation_decision{
-	// SURFACE AREA OF SOIL SAMPLE, TO BE CONFIRMED
-	const double soil_area = 0.5;
-	// WATER PUMP DISCHARGE (litres per second), TO BE CONFIRMED
-	const double pump_discharge = 1;
+const admin = require('firebase-admin')
+admin.initializeApp();
 
-	// RETRIEVE DAILY MET EIREANN FORECAST
-	var GetMetJSON = GetMet();
+// Reworked irrigation decision
+// I think instead of having irrigationDecision, get_met, and penman-monteith we should have just 1 cloud function
+// This would mean rewriting the fao library and the get_met function into javascript
+// But from what I've been googling, you should try to avoid calling cloud functions from other cloud functions ... So this might be better
 
-	// MET EIREANN (kPa)
-	var met_atmos_pres = GetMetJSON.pressure;
-	// MET EIREANN PRECIPITATION (mm per day)
-	var met_precipitation = GetMetJSON.precipitation;
-
-	// UNLESS SPECIFIED OTHERWISE, "SensorData()" RETURNS THE DAILY AVERAGE OF A READING
-	var SensorDataJSON = SensorData();
-	
-	// TEMPERATURE VALUES (Kelvin), NEED DAILY MIN, MAX, AND AVERAGE FOR PENMAN-MONTEITH
-	var sens_avg_t = SensorDataJSON.avg_t;
-	var sens_min_t = SensorDataJSON.min_t;
-	var sens_max_t = SensorDataJSON.max_t;
-	// NET RADIATION (MJ per day per M^2), CONVERT FROM WATTS PER M^2 TO MJ PER DAY PER M^2
-	var sens_net_rad = (SensorDataJSON.net_rad * 24 * 60 * 60) / 1000000;
-	// WIND SPEED (m per s)
-	// TODO: NOTE THE HEIGHT FROM WHICH THIS MEASUREMENT IS TAKEN, ALTER PENMAN-MONTEITH FUNC ACCORDINGLY (ASSUMES 1 METRE CURRENTLY)
-	var sens_ws = SensorDataJSON.ws;
-	// RELATIVE HUMIDITY (%)
-	var sens_rh = SensorDataJSON.rs;
-	
-	var Penman_MonteithJSON = assemble_Penman_MonteithJSON(met_atmos_pres, sens_avg_t, sens_min_t, sens_max_t, sens_net_rad, sens_ws, sens_rh);
-	// EVAPOTRANSPIRATION ESTIMATE (mm per day)
-	// NB: NOTE THAT mm per day IS EQUIVALENT TO litres per m^2 per day!!
-	var fao_transpiration = penman_monteith(Penman_MonteithJSON);
-	
-	if (met_precipitation < fao_transpiration){
-		// IF DAILY PRECIPITATION DOES NOT MEET DAILY TRANSPIRATION
+exports.irrigationDecision = functions
+    .region('europe-west2')
+	// Set schedule for every 15 minutes for test purposes, in reality this would be run once a day (Ideally at 9am)
+    .pubsub.schedule('every 15 minutes').onRun((context) => { // .pubsub.schedule('every day').onRun((context) => {
 		
-		// CALCULATE THE AMOUNT OF WATER NEEDED => AREA OF SOIL * DIFFERENCE BETWEEN PRECIPITATION AND TRANSPIRATION
-		var water_needed = soil_area * (fao_transpiration - met_precipitation);
-		// CALCULATE TIME IN SECONDS TO ACTIVATE PUMP FOR
-		var pump_time = water_needed / pump_discharge;
+		const BlanchLatitude = 53.3842;
+		const BlanchLongitude = -6.3760;
+		const soilArea = 1;			// Estimated value
+		const pumpDischarge = 1;	// Estimated value
 		
-		// SEND PUMP TIME DOWN TO MICROCONTROLLER (I HAVE NO IDEA HOW YOU DO THIS I JUST GUESSED)
-		var IrrigateSignal = assemble_IrrigateHTTP(pump_time);
-		return IrrigateSignal;
+		var rainCheck = false;
+		var rainTime = Date.now();
+		var pumpTime = 0;
 		
-		// REMEMBER LOGGING FUNCTIONALITY SHOULD BE ADDED HERE
-	} else {
-		// DAILY PRECIPITATION MEETS REQUIREMENTS
-		// IN THIS CASE WE WOULD LIKE TO VERIFY LATER THAT IT RAINED
+		// Call the get_data function from weather.py - Need to convert to JavaScript
+		var metEireannData = weather.get_data(BlanchLatitude, BlanchLongitude); // Passed Latitude & Longitude of Blanchardstown, Dublin
 		
-		// LOG A MOISTURE READING FOR THE MORNING
-		var sens_moisture_morning = SensorDataJSON.moisture;
-		var met_rain_hour = GetMetJSON.rain_hour;
-		var check_time = met_rain_hour + 1;
-		var no_rain_pump_time = fao_transpiration * soil_area / pump_discharge;
+		// If rain is expected set rainTime accordingly
+		if (metEireannData["precip_time"] != -1) {
+			rainTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), metEireannData["precip_time"], 0, 0, 0);
+		}		
 		
-		// ADDITIONAL CLOUD FUNCTION: RAIN CHECK
-		// WE WANT TO QUEUE A CHECK 1 HOUR AFTER IT RAINS
-		// WE COMPARE TO SEE IF MOISTURE HAS INCREASED SINCE THE MORNING
-		// IF SO, WE ASSUME IT RAINED, IF NOT, IRRIGATE ACCORDING TO MORNING'S READINGS
-		rain_check(check_time, sens_moisture_morning, no_rain_pump_time);
+		// calcAvgReadings needs to be written
+		// It will return a struct with the variables called below
+		// This struct will primarily be avgs from the past 24 hours, but also include min and max temps
+		var penmanMonteithReadings = calcAvgReadings(); // Parse last 24 hours of sensor data for relevant penman-monteith data
 		
-		return EmptyHTTP;
-	}
-}
-
+		// Store penman-monteith parameters in variables
+		var net_rad = penmanMonteithReadings.net_rad;
+		var t_avg = penmanMonteithReadings.t_avg + 273.15; // Convert temperature readings to kelvin for calculations
+		var t_min = penmanMonteithReadings.t_min + 273.15;
+		var t_max = penmanMonteithReadings.t_max + 273.15;
+		var ws = penmanMonteithReadings.ws;
+		var svp = fao.svp_from_t(t_avg);
+		var svp_t_min = fao.svp_from_t(t_min)
+		var svp_t_max = fao.svp_from_t(t_max)
+		var avp = fao.avp_from_rhmean(svp_t_min, svp_t_max, penmanMonteithReadings.rh_avg);
+		var delta_svp = fao.delta_svp(t_avg);
+		var psy_const = fao.psy_const(penmanMonteithReadings.atmos_pres);
+		
+		// Calculate ETo - Need to convert to JavaScript
+		faoTranspiration = fao.fao56_penman_monteith(net_rad, t_avg, ws, svp, avp, psy_const);
+				
+		if (metEireannData["precip"] < faoTranspiration){
+			// If daily precipication does not meet transpiration requirements
+			
+			// Calculate water needed => Soil Area * Precipitation Deficit
+			var waterNeeded = soilArea * (faoTranspiration - metPrecipitation);
+			// Calculate time in seconds to activate pump
+			var pumpTime = waterNeeded / pumpDischarge;
+			
+			// *** SEND PUMP TIME TO ESP32 HERE ***
+			
+			// We do not need to rainCheck in this scenario
+			rainCheck = false;
+		} else {
+			// Daily precipitation meets requirements
+			// Implement a verification strategy => Set flag to perform the rainCheck cloud function
+			
+			// Calculate water needed => Soil Area * Evapotranspiration
+			var waterNeeded = soilArea * faoTranspiration;
+			// Calculate time in seconds to activate pump
+			var pumpTime = waterNeeded / pumpDischarge;
+			
+			rainCheck = true;
+		}
+		
+		// Log processed data to databases
+		// Penman-Montieth transpiration calculation
+		admin.firestore().collection('penman-monteith').add(
+            {
+                deviceID: 69,
+                time: Date.now(),
+                transpiration: faoTranspiration,
+				netRad: net_rad,
+				tAvg: t_avg,
+				tMin: t_min,
+				tMax: t_max,
+				ws: ws,
+				svp: svp,
+				avp: avp,
+				deltaSvp: delta_svp,
+				psyConst: psy_const,
+				pumpTime: pumpTime
+            });
+		
+		// Met Eireann Request Data
+		admin.firestore().collection('met-eireann').add(
+            {
+                deviceID: 69,
+                time: Date.now(),
+                precipitation: metEireannData["precip"],
+				rainTime: metEireannData["precip_time"]
+            });
+		
+		// Rain Check Database, referenced by rain check function
+		admin.firestore().collection('rain-check').add(
+            {
+                deviceID: 69,
+                time: Date.now(),
+				enable: rainCheck,
+				checkHour: (rainTime + 60*60*1000).getHours() // Check on next hour after it rains
+            });
+    });
