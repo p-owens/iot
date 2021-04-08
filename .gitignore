@@ -1,0 +1,4 @@
+mongoose/build/
+.vscode
+mongoose/.vscode
+mongoose/*.pem
